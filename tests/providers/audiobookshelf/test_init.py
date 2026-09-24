@@ -1,8 +1,10 @@
 """Tests for Audiobookshelf provider initialization."""
 
+import asyncio
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
+from aioaudiobookshelf.exceptions import ServiceUnavailableError
 from aiohttp import ClientConnectionError
 from music_assistant_models.enums import MediaType, ProviderFeature
 from music_assistant_models.errors import ProviderUnavailableError
@@ -84,3 +86,18 @@ async def test_async_init_unreachable_server(
         pytest.raises(ProviderUnavailableError),
     ):
         await provider.handle_async_init()
+
+
+async def test_unload_shuts_down_socket_on_failing_logout(provider: Audiobookshelf) -> None:
+    """A failing logout does not leave the socket reconnecting."""
+    provider._close_sessions_task = asyncio.create_task(asyncio.sleep(3600))
+    provider._on_unload_callbacks = []
+    provider.sessions = {}
+    provider._client.logout = AsyncMock(side_effect=ServiceUnavailableError)  # type: ignore[method-assign]
+    socket_logout = AsyncMock()
+    provider._client_socket = Mock(logout=socket_logout)
+
+    with patch.object(MusicProvider, "unload", AsyncMock()):
+        await provider.unload()
+
+    socket_logout.assert_awaited_once()
