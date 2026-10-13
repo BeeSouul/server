@@ -201,6 +201,51 @@ def test_get_ffmpeg_args_omits_layout_above_stereo() -> None:
         assert "-channel_layout" not in part
 
 
+def _has_tls_verify_off(input_args: list[str]) -> bool:
+    """Return whether the input args disable TLS verification."""
+    return any(input_args[i : i + 2] == ["-tls_verify", "0"] for i in range(len(input_args)))
+
+
+@pytest.mark.parametrize(
+    ("input_path", "expected"),
+    [
+        ("https://192.168.1.10:8123/api/tts_proxy/x.mp3", True),
+        ("https://[fd00::1]:8123/x.mp3", True),
+        ("https://homeassistant.local:8123/x.mp3", True),
+        ("https://nas/x.mp3", True),
+        ("https://media.home.arpa/x.mp3", True),
+        ("https://stream.example.com/x.mp3", False),
+        ("https://8.8.8.8/x.mp3", False),
+        ("http://192.168.1.10/x.mp3", False),
+    ],
+)
+def test_get_ffmpeg_args_skips_tls_verify_for_private_hosts(
+    input_path: str, expected: bool
+) -> None:
+    """Https inputs on LAN hosts skip certificate verification, public hosts stay verified."""
+    args = get_ffmpeg_args(
+        AudioFormat(content_type=ContentType.MP3), _PCM_OUT, [], input_path=input_path
+    )
+
+    input_args, _ = _split_at_input(args)
+    assert _has_tls_verify_off(input_args) is expected
+
+
+def test_get_ffmpeg_args_keeps_caller_tls_verify() -> None:
+    """A caller that sets -tls_verify itself is not overridden."""
+    args = get_ffmpeg_args(
+        AudioFormat(content_type=ContentType.MP3),
+        _PCM_OUT,
+        [],
+        input_path="https://192.168.1.10:8123/x.mp3",
+        extra_input_args=["-tls_verify", "1"],
+    )
+
+    input_args, _ = _split_at_input(args)
+    assert input_args.count("-tls_verify") == 1
+    assert input_args[input_args.index("-tls_verify") + 1] == "1"
+
+
 def test_multichannel_pcm_folds_down_without_stretching(tmp_path: Path) -> None:
     """Raw surround PCM keeps its real width and length, and its rear channels survive."""
     source = tmp_path / "surround.pcm"
@@ -1708,6 +1753,22 @@ async def test_probe_audio_stream_opens_the_input_like_the_decoder(
     assert proc.args[read_args_start : read_args_start + len(_INPUT_READ_ARGS)] == _INPUT_READ_ARGS
     assert proc.args.index("-user_agent") < proc.args.index("-i")
     assert proc.args[-2:] == ["-i", "https://example.com/a.flac"]
+
+
+@pytest.mark.parametrize(
+    ("input_path", "expected"),
+    [("https://192.168.1.10/a.flac", True), ("https://example.com/a.flac", False)],
+)
+async def test_probe_audio_stream_skips_tls_verify_for_private_hosts(
+    monkeypatch: pytest.MonkeyPatch, input_path: str, expected: bool
+) -> None:
+    """The probe skips certificate verification on LAN hosts like the decoder does."""
+    proc = _FakeProbeProcess(_probe_output(codec_name="flac", sample_rate="44100", channels=2))
+    monkeypatch.setattr("music_assistant.helpers.ffmpeg.AsyncProcess", proc)
+
+    await probe_audio_stream(input_path)
+
+    assert _has_tls_verify_off(proc.args[: proc.args.index("-i")]) is expected
 
 
 async def test_probe_audio_stream_returns_nothing_on_a_failed_probe(

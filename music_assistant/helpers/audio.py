@@ -30,7 +30,7 @@ from music_assistant.constants import (
 )
 from music_assistant.helpers.json import JSON_DECODE_EXCEPTIONS, json_loads
 
-from .ffmpeg import DEFAULT_MP3_BIT_RATE, get_ffmpeg_stream
+from .ffmpeg import DEFAULT_MP3_BIT_RATE, get_ffmpeg_stream, is_private_host
 from .process import AsyncProcess, communicate
 
 if TYPE_CHECKING:
@@ -374,6 +374,9 @@ def build_concat_filelist(paths: list[str]) -> str:
         # path must be written as '\'' to prevent the path being truncated at the quote.
         escaped_path = path.replace("'", "'\\''")
         lines.append(f"file '{escaped_path}'\n")
+        if path.startswith("https://") and is_private_host(path):
+            # applies to the file above; a -tls_verify cli flag does not reach concat parts
+            lines.append("option tls_verify 0\n")
     return "".join(lines)
 
 

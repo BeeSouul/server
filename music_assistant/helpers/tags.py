@@ -28,6 +28,7 @@ if TYPE_CHECKING:
     from mutagen.mp4 import MP4Tags
 
 from music_assistant.constants import MASS_LOGGER_NAME, UNKNOWN_ARTIST
+from music_assistant.helpers.ffmpeg import is_private_host
 from music_assistant.helpers.json import json_loads
 from music_assistant.helpers.process import (
     AsyncProcess,
@@ -780,6 +781,9 @@ def parse_tags(
         raise InvalidDataError(f"Unable to retrieve info for {input_file}: {err}") from err
     source = input_file if fd is None else descriptor_path(fd)
     pass_fds = () if fd is None else (fd,)
+    tls_args = (
+        ("-tls_verify", "0") if source.startswith("https://") and is_private_host(source) else ()
+    )
     args = (
         "ffprobe",
         "-hide_banner",
@@ -793,6 +797,7 @@ def parse_tags(
         "-show_chapters",
         "-print_format",
         "json",
+        *tls_args,
         "-i",
         source,
     )

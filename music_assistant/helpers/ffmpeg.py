@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import logging
 import re
 import time
@@ -12,6 +13,7 @@ from contextlib import suppress
 from copy import copy
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final, NoReturn
+from urllib.parse import urlsplit
 
 from music_assistant_models.enums import ContentType
 from music_assistant_models.errors import AudioError
@@ -51,6 +53,8 @@ _INPUT_READ_ARGS: Final[list[str]] = [
     "-analyzeduration",
     "500000",  # 0.5 seconds should be enough to detect the format
 ]
+
+_PRIVATE_HOST_SUFFIXES: Final[tuple[str, ...]] = (".local", ".lan", ".internal", ".home.arpa")
 
 # Regex patterns to extract audio format details from ffmpeg's stderr output.
 # Examples of the lines we parse:
@@ -418,6 +422,7 @@ async def probe_audio_stream(
         "error",
         *_INPUT_READ_ARGS,
         *extra_input_args,
+        *_tls_input_args(input_path, extra_input_args),
         "-select_streams",
         "a:0",
         "-show_entries",
@@ -616,6 +621,7 @@ def get_ffmpeg_args(
     # collect args for the main input, mirroring how _build_filtergraph_args opens the
     # extra inputs: the read args lead the group so the caller can still override them
     input_args = [*_INPUT_READ_ARGS, *extra_input_args]
+    input_args += _tls_input_args(input_path, extra_input_args)
     if "-f" not in extra_input_args:
         # without an input format of their own, the caller leaves the input spec to us
         if input_path.startswith("http"):
@@ -801,6 +807,16 @@ def add_input_fflag(input_args: list[str], flag: str) -> None:
             input_args[idx] += flag
     else:
         input_args += ["-fflags", flag]
+
+
+def is_private_host(url: str) -> bool:
+    """Return whether the url points at a LAN host: a private IP, a single-label name or a local suffix."""
+    if not (host := urlsplit(url).hostname):
+        return False
+    try:
+        return ipaddress.ip_address(host).is_private
+    except ValueError:
+        return "." not in host or host.endswith(_PRIVATE_HOST_SUFFIXES)
 
 
 async def check_ffmpeg_version() -> None:
@@ -1081,3 +1097,15 @@ def _parse_ffprobe_stream_info(output: bytes) -> FFMpegStreamInfo | None:
     elif codec.is_lossless():
         info.bit_depth = _SAMPLE_FMT_BIT_DEPTH.get(stream.get("sample_fmt", ""))
     return info
+
+
+def _tls_input_args(input_path: str, extra_input_args: Sequence[str]) -> list[str]:
+    """Return the input args that skip certificate verification for https inputs on LAN hosts."""
+    # self-signed certificates live on LAN hosts; FFmpeg 9 verifies them by default
+    if (
+        input_path.startswith("https://")
+        and "-tls_verify" not in extra_input_args
+        and is_private_host(input_path)
+    ):
+        return ["-tls_verify", "0"]
+    return []
